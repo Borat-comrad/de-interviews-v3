@@ -38,5 +38,3 @@ def save_predictions(connection, output: pd.DataFrame, summary: dict, as_of: dat
              summary["test_count"], summary["future_count"], Jsonb(summary["feature_names"]),
              Jsonb(summary["parameters"]), Jsonb(summary["metrics"])),
         )
-
-

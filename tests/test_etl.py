@@ -1,8 +1,10 @@
 from datetime import date
 from decimal import Decimal
 
+import psycopg
 import pytest
 
+from etl.db import pipeline_lock
 from etl.load import load_core, refresh_market
 
 START, END, AS_OF = date(2025, 1, 1), date(2027, 1, 1), date(2026, 10, 26)
@@ -48,9 +50,9 @@ def test_exact_fx_city_dedup_and_body_fallback(db, add_price):
     price_id = add_price(price=500, currency_code="840", nearest_rate_date=date(2026, 10, 1),
                          body_type=1, unloading_city_gcid=1, total_volume=0)
     load_core(db, START, END)
-    payment = db.execute("SELECT * FROM core.prices").fetchone()
-    assert payment["price_rub"] == Decimal(45000)
-    assert payment["volume_category"] == "OTH"
+    price = db.execute("SELECT * FROM core.prices").fetchone()
+    assert price["price_rub"] == Decimal(45000)
+    assert price["volume_category"] == "OTH"
     assert db.execute("SELECT count(*) AS n FROM core.cities").fetchone()["n"] == 2
     assert db.execute("SELECT region FROM core.cities WHERE gc_id=1").fetchone()["region"] == "Татарстан"
     assert db.execute("SELECT body_group FROM core.price_body_groups WHERE price_id=%s", (price_id,)
@@ -95,3 +97,28 @@ def test_missing_body_and_existing_categories_are_preserved(db, add_price):
     assert db.execute("SELECT weight_category,volume_category FROM core.prices").fetchone() == {
         "weight_category": "FTL", "volume_category": "OTH",
     }
+
+
+def test_failed_core_write_rolls_back_window_replacement(db, add_price):
+    price_id = add_price()
+    load_core(db, START, END)
+    db.execute("ALTER TABLE core.prices ADD CONSTRAINT test_price_limit CHECK (price_rub < 20000)")
+    try:
+        db.execute("UPDATE raw.prices SET price=50000 WHERE id=%s", (price_id,))
+        with pytest.raises(psycopg.errors.CheckViolation):
+            load_core(db, START, END)
+        assert db.execute("SELECT price_rub FROM core.prices").fetchone()["price_rub"] == Decimal(10000)
+        assert db.execute("SELECT count(*) AS n FROM core.price_dates").fetchone()["n"] == 1
+    finally:
+        db.execute("ALTER TABLE core.prices DROP CONSTRAINT test_price_limit")
+
+
+def test_overlapping_pipeline_runs_are_rejected_and_lock_is_released(db, test_database):
+    from psycopg.rows import dict_row
+
+    with psycopg.connect(dbname=test_database, autocommit=True, row_factory=dict_row) as other:
+        with pipeline_lock(db), pytest.raises(RuntimeError, match="Another pipeline run"):
+            with pipeline_lock(other):
+                pytest.fail("A second writer acquired the pipeline lock")
+        with pipeline_lock(other):
+            assert other.execute("SELECT 1 AS value").fetchone()["value"] == 1
