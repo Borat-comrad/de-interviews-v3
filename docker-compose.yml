@@ -1,0 +1,48 @@
+name: de-interviews-v3
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-logistics}
+      POSTGRES_USER: ${POSTGRES_USER:-logistics}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_HOST_AUTH_METHOD: ${POSTGRES_HOST_AUTH_METHOD:-trust}
+      N_PRICES: ${N_PRICES:-300000}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./sql/schema.sql:/source/schema.sql:ro
+      - ./sql/synthetic.sql:/source/synthetic.sql:ro
+      - ./docker/init-source.sh:/docker-entrypoint-initdb.d/10-source.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+    networks: [data]
+  pipeline:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-logistics}
+      PGUSER: ${POSTGRES_USER:-logistics}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-}
+      AS_OF: ${AS_OF:-2026-10-26}
+      RUN_INTERVAL_SECONDS: ${RUN_INTERVAL_SECONDS:-86400}
+      MODEL_ITERATIONS: ${MODEL_ITERATIONS:-500}
+      MODEL_THREADS: ${MODEL_THREADS:-4}
+      RANDOM_SEED: ${RANDOM_SEED:-42}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [data]
+
+volumes:
+  postgres-data:
+
+networks:
+  data:
+    internal: true
