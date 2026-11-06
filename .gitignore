@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+catboost_info/
+/de-interviews-v3/
+/tmp/
